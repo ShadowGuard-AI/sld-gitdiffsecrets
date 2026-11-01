@@ -37,6 +37,9 @@ def calculate_entropy(data):
     if not data:
         return 0
 
+    # Characters outside the first 256 code points add to len(data)
+    # but are never counted in the loop, so the shares do not sum to
+    # one for non Latin text and the entropy reads low.
     entropy = 0
     for x in range(256):
         p_x = float(data.count(chr(x))) / len(data)
@@ -69,6 +72,10 @@ def scan_diff(diff_content, source="standard input"):
     secrets_found = []
 
     for line_number, raw_line in enumerate(tqdm(diff_content.splitlines(), desc="Scanning Diff Content"), start=1):
+        # The diff header lines pass this test too. A +++ or --- file
+        # header loses its first character and is then scanned as if it
+        # were content, so a long token in a file name can be reported
+        # as a secret in a file it never appeared in.
         # Only process lines that were added (+) or removed (-)
         if raw_line.startswith("+") or raw_line.startswith("-"):
             direction = "added" if raw_line.startswith("+") else "removed"
@@ -80,6 +87,9 @@ def scan_diff(diff_content, source="standard input"):
                     # The entropy gate applies only to the generic
                     # API Key pattern. Direct pattern matches are
                     # reported without the gate.
+                    # One value can be reported several times, once per
+                    # pattern that matches it, and the totals in main
+                    # count reports, not distinct secrets.
                     if name == "API Key":
                         entropy = calculate_entropy(matched_text)
                         if entropy <= 4.0:
