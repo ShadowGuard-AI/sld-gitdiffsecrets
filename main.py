@@ -47,35 +47,50 @@ def calculate_entropy(data):
 
 
 
-def scan_diff(diff_content):
+MASKED = "[masked]"
+
+
+def scan_diff(diff_content, source="standard input"):
     """
     Scans the git diff content for potential secrets using regular expressions and entropy analysis.
 
     Args:
         diff_content (str): The git diff output as a string.
+        source (str): The input file name, or the standard input label.
 
     Returns:
-        list: A list of dictionaries, each containing information about a detected secret.
+        list: A list of dictionaries, each containing the pattern type,
+               the source, the line number, the direction (added or
+               removed), and a fixed masked marker in place of the
+               value. The matched value and the source line are never
+               recorded. Context lines are not scanned.
                Returns an empty list if no secrets are found.
     """
     secrets_found = []
 
-    for line in tqdm(diff_content.splitlines(), desc="Scanning Diff Content"):
-        # Only process lines that were added (+) or modified (-)
-        if line.startswith("+") or line.startswith("-"):
-            line = line[1:].strip() #Remove the + or - and leading/trailing whitespace
+    for line_number, raw_line in enumerate(tqdm(diff_content.splitlines(), desc="Scanning Diff Content"), start=1):
+        # Only process lines that were added (+) or removed (-)
+        if raw_line.startswith("+") or raw_line.startswith("-"):
+            direction = "added" if raw_line.startswith("+") else "removed"
+            line = raw_line[1:].strip() #Remove the + or - and leading/trailing whitespace
             for name, regex in REGEXES.items():
                 matches = re.findall(regex, line)
                 for match in matches:
-                    # Basic entropy check (can be adjusted based on needs)
-                    entropy = calculate_entropy(match)
-                    if entropy > 4.0:  # Adjust entropy threshold as needed
-                        secrets_found.append({
-                            "type": name,
-                            "match": match,
-                            "line": line,
-                            "entropy": entropy
-                        })
+                    matched_text = match if isinstance(match, str) else str(match)
+                    # The entropy gate applies only to the generic
+                    # API Key pattern. Direct pattern matches are
+                    # reported without the gate.
+                    if name == "API Key":
+                        entropy = calculate_entropy(matched_text)
+                        if entropy <= 4.0:
+                            continue
+                    secrets_found.append({
+                        "type": name,
+                        "source": source,
+                        "line_number": line_number,
+                        "direction": direction,
+                        "value": MASKED
+                    })
 
     return secrets_found
 
@@ -126,6 +141,13 @@ def main():
         logging.debug("Verbose mode enabled.")
 
 
+    # Refuse an in place run: the resolved output must not be the input.
+    if args.input:
+        if os.path.realpath(args.output) == os.path.realpath(args.input):
+            logging.error("Output path resolves to the input file. Refusing to run.")
+            print("Output path resolves to the input file. Refusing to run.")
+            sys.exit(1)
+
     try:
         # Read diff content from standard input or file
         if args.input:
@@ -146,24 +168,31 @@ def main():
         # Input validation: Check if diff_content is empty
         if not diff_content.strip():
             logging.warning("No diff content provided. Exiting.")
-            sys.exit(0)
+            sys.exit(1)
 
 
         # Scan for secrets
-        secrets = scan_diff(diff_content)
+        source = args.input if args.input else "standard input"
+        secrets = scan_diff(diff_content, source=source)
 
-        # Log the results
+        # Log the results. Every finding carries the pattern type, the
+        # source, the line number, and the direction marker, with a
+        # fixed masked marker in place of the value. The matched value
+        # and the full source line appear in no route.
         if secrets:
             logging.info(f"Found {len(secrets)} potential secrets.")
             try:
                 with open(args.output, "w") as f:
                     for secret in secrets:
-                        log_message = f"Type: {secret['type']}, Match: {secret['match']}, Line: {secret['line']}, Entropy: {secret['entropy']}"
+                        log_message = f"Type: {secret['type']}, Source: {secret['source']}, Line: {secret['line_number']}, Direction: {secret['direction']}, Value: {secret['value']}"
                         f.write(log_message + "\n")
                         logging.info(log_message)
                 logging.info(f"Secrets logged to: {args.output}")
             except Exception as e:
                 logging.error(f"Error writing to log file: {args.output} - {e}")
+                print("Output not written.")
+                logging.error("Output not written.")
+                sys.exit(1)
         else:
             logging.info("No secrets found.")
 
