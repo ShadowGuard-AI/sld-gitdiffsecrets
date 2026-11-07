@@ -6,6 +6,7 @@ import os
 from tqdm import tqdm
 import dotenv
 import math
+from collections import Counter
 
 # Load environment variables from .env file (if present)
 dotenv.load_dotenv()
@@ -37,14 +38,12 @@ def calculate_entropy(data):
     if not data:
         return 0
 
-    # Characters outside the first 256 code points add to len(data)
-    # but are never counted in the loop, so the shares do not sum to
-    # one for non Latin text and the entropy reads low.
+    # Count every distinct character actually present, whatever its
+    # code point, so the shares sum to one for non Latin text as well.
     entropy = 0
-    for x in range(256):
-        p_x = float(data.count(chr(x))) / len(data)
-        if p_x > 0:
-            entropy += - p_x * math.log2(p_x)
+    for count in Counter(data).values():
+        p_x = count / len(data)
+        entropy += - p_x * math.log2(p_x)
 
     return entropy
 
@@ -72,10 +71,11 @@ def scan_diff(diff_content, source="standard input"):
     secrets_found = []
 
     for line_number, raw_line in enumerate(tqdm(diff_content.splitlines(), desc="Scanning Diff Content"), start=1):
-        # The diff header lines pass this test too. A +++ or --- file
-        # header loses its first character and is then scanned as if it
-        # were content, so a long token in a file name can be reported
-        # as a secret in a file it never appeared in.
+        # Diff file headers are not content: a +++ or --- header line is
+        # never scanned, so a long token in a file name is not reported
+        # as a secret.
+        if raw_line.startswith("+++") or raw_line.startswith("---"):
+            continue
         # Only process lines that were added (+) or removed (-)
         if raw_line.startswith("+") or raw_line.startswith("-"):
             direction = "added" if raw_line.startswith("+") else "removed"
